@@ -35,17 +35,14 @@ dockerhubGraber needs some dependencies, to install them on your environment:
 
 Before your start **dockerhubGraber** you need to modify the configuration file ``config.py`` :
 
-## Wordlists & Resources
-
-Some wordlists & regex have been created by us and some others are inspired from other repos/researchers :
-
-* https://gist.github.com/nullenc0de/fa23444ed574e7e978507178b50e1057
-* https://github.com/streaak/keyhacks
-* https://mathiasbynens.be/demo/url-regex
-
 ## TODO
 
 - [X] Manage rate limit
+- [X] Add multi threads
+
+## Resources
+
+The code of the project was largely inspired by [gitGraber](https://github.com/hisxo/gitGraber/). thanks for the great work. i hope this tool will make a similar contribution to the security of dockerhub.
 
 # Disclaimer
 

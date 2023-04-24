@@ -12,6 +12,8 @@ from itertools import product
 import string
 import hashlib
 from termcolor import colored, cprint
+from multiprocessing.dummy import Pool
+from functools import partial
 
 SCANNER = SecretScanner("rules.json")
 client = DockerHubClient()
@@ -92,67 +94,55 @@ def get_all_tags(org,repo_name, page=1,per_page=100):
         page = page+1
         resp = client.get_tags(org,repo_name,page,per_page)
 
-def searchDockerhub(keywordsFile, args):
-    keywords_list = []
-    if os.path.exists(keywordsFile):
-        keywords_list = open(keywordsFile).read().split("\n")
-        random.shuffle(keywords_list)
-        print(colored(f'[i] {len(keywords_list)} Keywords loaded from {keywordsFile}', 'yellow'))
-        
+def searchDockerhub(args,qry):
+    if verbose:
+        print(colored(f'[i] Dockerhub query: {config.DOCKERHUB_BASE_URL}/search?q={qry}', 'yellow'))
     
-    while True: 
-        if keywords_list:
-            qry = keywords_list.pop()
+    repos = search_repos(qry)
+    for repo in repos:
+        if(repo["is_official"]):
+            repo_name = repo["repo_name"]
+            org = "library"
         else:
-            # This code generates a random string of length between 3 and 5, consisting of uppercase letters, digits, and the characters "-_."
-            qry = ''.join(random.choices(string.ascii_uppercase + string.digits + "-_.", k = random.randint(3, 5)))    
-        if verbose:
-            print(colored(f'[i] Dockerhub query: {config.DOCKERHUB_BASE_URL}/search?q={qry}', 'yellow'))
-        
-        repos = search_repos(qry)
-        for repo in repos:
-            if(repo["is_official"]):
-                repo_name = repo["repo_name"]
-                org = "library"
-            else:
-                org, repo_name = repo["repo_name"].split("/")     
-            tags = get_all_tags(org,repo_name)
-            for tag in tags:
-                tag_name = tag["name"]
-                if verbose:
-                    print(colored(f'[i] Scanning: {repo["repo_name"]}:{tag_name}', 'yellow'))
-                resp = client.get_images(org,repo_name,tag_name)
-                if resp['code'] == 200:
-                    images = resp['content']
-                    for image in images:
-                       
-                        instructions = ""
-                        if "layers" in image:
-                            for layer in image["layers"]:
-                                instructions = f"{instructions}\n{layer['instruction']}"
-                        for secret in SCANNER.scan(instructions):
+            org, repo_name = repo["repo_name"].split("/")     
+        tags = get_all_tags(org,repo_name)
+        for tag in tags:
+            tag_name = tag["name"]
+            if verbose:
+                print(colored(f'[i] Scanning: {repo["repo_name"]}:{tag_name}', 'yellow'))
+            resp = client.get_images(org,repo_name,tag_name)
+            if resp['code'] == 200:
+                images = resp['content']
+                for image in images:
+                    
+                    instructions = ""
+                    if "layers" in image:
+                        for layer in image["layers"]:
+                            instructions = f"{instructions}\n{layer['instruction']}"
+                    for secret in SCANNER.scan(instructions):
+                        
+                        hash_object = hashlib.sha256(str.encode(secret["secret"]))
+                        hex_dig = hash_object.hexdigest()
+                        cache_key = f'{org}/{repo_name}:{tag_name} ({hex_dig})'
+                        
+                        f = open(imagesFile, 'a+', encoding='utf-8')
+                        s = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                        if s.find(bytes(cache_key,'utf-8')) == -1:
                             
-                            hash_object = hashlib.sha256(str.encode(secret["secret"]))
-                            hex_dig = hash_object.hexdigest()
-                            cache_key = f'{org}/{repo_name}:{tag_name} ({hex_dig})'
                             
-                            f = open(imagesFile, 'a+', encoding='utf-8')
-                            s = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                            if s.find(bytes(cache_key,'utf-8')) == -1:
-                                
-                                
-                                displayMessage = displayResults(secret["secret"],secret["type"],qry,image,repo,tag_name)
-                                
-                                if args.discord:
-                                    notifyDiscord(displayMessage)
-                                if args.slack:
-                                    notifySlack(displayMessage)
-                                if args.telegram:
-                                    notifyTelegram(displayMessage)
-                                f.write(cache_key + '\n')
+                            displayMessage = displayResults(secret["secret"],secret["type"],qry,image,repo,tag_name)
+                            
+                            if args.discord:
+                                notifyDiscord(displayMessage)
+                            if args.slack:
+                                notifySlack(displayMessage)
+                            if args.telegram:
+                                notifyTelegram(displayMessage)
+                            f.write(cache_key + '\n')
 
 parser = argparse.ArgumentParser()
 argcomplete.autocomplete(parser)
+parser.add_argument('-t', '--threads', action='store', dest='max_threads', help='The maximum number of threads that can be used to accelerate the retrieval of data from Dockerhub (the rate limit is respected)', default="3")
 parser.add_argument('-k', '--keyword', action='store', dest='keywordsFile', help='Specify a keywords file (-k keywordsfile.txt)', default="wordlists/keywords.txt")
 parser.add_argument('-i', '--images', action='store', dest='imagesFile', help='Create a file where all scanned images are stored',default="rawImages.txt")
 parser.add_argument('-d', '--discord', action='store_true', help='Enable discord notifications', default=False)
@@ -184,5 +174,20 @@ if verbose:
     print(" - because who needs privacy anyways? \
 We'll find your sensitive data on hub.docker.com \
 faster than your boss finds your mistakes.")
+    
+    
+    
+keywords_list = []
+if os.path.exists(keywordsFile):
+    keywords_list = open(keywordsFile).read().split("\n")
+    random.shuffle(keywords_list)
+    if verbose:
+        print(colored(f'[i] {len(keywords_list)} Keywords loaded from {keywordsFile}', 'yellow'))
+else:
+    keywords_list = list(map(lambda t: ''.join(t), product(string.ascii_letters + string.digits + "-_.", repeat=3)))
+    
 
-searchDockerhub(keywordsFile, args)
+pool = Pool( int(args.max_threads) )
+pool.map(partial(searchDockerhub,args), keywords_list )
+pool.close()
+pool.join()
